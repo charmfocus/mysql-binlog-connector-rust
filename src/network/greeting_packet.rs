@@ -4,6 +4,7 @@ use byteorder::{LittleEndian, ReadBytesExt};
 
 use crate::{binlog_error::BinlogError, ext::cursor_ext::CursorExt};
 
+#[allow(dead_code)]
 pub struct GreetingPacket {
     pub protocol_version: u8,
     pub server_version: String,

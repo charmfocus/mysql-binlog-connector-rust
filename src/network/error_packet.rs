@@ -4,6 +4,7 @@ use byteorder::{LittleEndian, ReadBytesExt};
 
 use crate::{binlog_error::BinlogError, ext::cursor_ext::CursorExt};
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct ErrorPacket {
     pub error_code: u16,

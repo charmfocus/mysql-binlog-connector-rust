@@ -9,6 +9,8 @@ use super::{event_header::EventHeader, row_event::RowEvent, table_map_event::Tab
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct UpdateRowsEvent {
     pub table_id: u64,
+    pub database_name: String,
+    pub table_name: String,
     pub included_columns_before: Vec<bool>,
     pub included_columns_after: Vec<bool>,
     pub rows: Vec<(RowEvent, RowEvent)>,
@@ -34,6 +36,8 @@ impl UpdateRowsEvent {
 
         Ok(Self {
             table_id,
+            database_name: table_map_event.database_name.clone(),
+            table_name: table_map_event.table_name.clone(),
             included_columns_before,
             included_columns_after,
             rows,
