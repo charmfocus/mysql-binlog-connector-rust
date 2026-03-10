@@ -12,7 +12,8 @@ pub(crate) mod test {
         command::{authenticator::Authenticator, command_util::CommandUtil},
         event::{
             delete_rows_event::DeleteRowsEvent, event_data::EventData, query_event::QueryEvent,
-            update_rows_event::UpdateRowsEvent, write_rows_event::WriteRowsEvent,
+            table_map_event::TableMapEvent, update_rows_event::UpdateRowsEvent,
+            write_rows_event::WriteRowsEvent,
         },
     };
 
@@ -23,6 +24,7 @@ pub(crate) mod test {
         pub update_events: Vec<UpdateRowsEvent>,
         pub delete_events: Vec<DeleteRowsEvent>,
         pub query_events: Vec<QueryEvent>,
+        pub table_map_events: Vec<TableMapEvent>,
         pub binlog_parse_millis: u64,
         pub db_url: String,
         pub server_id: u64,
@@ -40,6 +42,7 @@ pub(crate) mod test {
                 update_events: Vec::new(),
                 delete_events: Vec::new(),
                 query_events: Vec::new(),
+                table_map_events: Vec::new(),
                 db_url: env.get(Env::DB_URL).unwrap().to_string(),
                 default_db: env.get(Env::DEFAULT_DB).unwrap().to_string(),
                 default_tb: env.get(Env::DEFAULT_TB).unwrap().to_string(),
@@ -110,6 +113,9 @@ pub(crate) mod test {
                 server_id: self.server_id,
                 gtid_enabled: false,
                 gtid_set: String::new(),
+                heartbeat_interval_secs: 5,
+                timeout_secs: 60,
+                ..Default::default()
             };
 
             let all_events = Arc::new(Mutex::new(Vec::new()));
@@ -135,6 +141,9 @@ pub(crate) mod test {
                     EventData::WriteRows(event) => {
                         self.insert_events.push(event);
                     }
+                    EventData::TableMap(event) => {
+                        self.table_map_events.push(event);
+                    }
                     // mysql8.0 with binlog transaction compression
                     EventData::TransactionPayload(event) => {
                         for (_header, data) in event.uncompressed_events {
@@ -147,6 +156,9 @@ pub(crate) mod test {
                                 }
                                 EventData::DeleteRows(event) => {
                                     self.delete_events.push(event);
+                                }
+                                EventData::TableMap(event) => {
+                                    self.table_map_events.push(event);
                                 }
                                 _ => {}
                             }
@@ -171,7 +183,7 @@ pub(crate) mod test {
             prepare_sqls: &Vec<String>,
             test_sqls: &Vec<String>,
         ) -> Result<(String, u32), BinlogError> {
-            let mut authenticator = Authenticator::new(&self.db_url)?;
+            let mut authenticator = Authenticator::new(&self.db_url, 60, None)?;
             let mut channel = authenticator.connect().await?;
 
             for sql in prepare_sqls {
