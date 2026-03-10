@@ -4,7 +4,7 @@ members = [".", "./example"]
 [package]
 edition = "2021"
 name = "mysql-binlog-connector-rust"
-version = "0.2.2"
+version = "0.3.3"
 authors = ["Shicai Xu <chenglingsu@126.com>"]
 categories = ["database"]
 description = "mysql binlog connector"
@@ -35,3 +35,5 @@ lazy_static = "1.4.0"
 thiserror = "2.0.9"
 mysql_common = "0.33.0"
 base64 = "0.22.1"
+log = "0.4.26"
+socket2 = "0.6.1"
