@@ -5,7 +5,6 @@ pub(crate) mod test {
         time::Duration,
     };
 
-    use async_std::task::block_on;
     use mysql_binlog_connector_rust::{
         binlog_client::BinlogClient,
         binlog_error::BinlogError,
@@ -18,6 +17,15 @@ pub(crate) mod test {
     };
 
     use crate::runner::{env::test::Env, mock::test::Mock};
+
+    fn block_on<F: std::future::Future>(f: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(f)
+    }
 
     pub struct TestRunner {
         pub insert_events: Vec<WriteRowsEvent>,
@@ -134,7 +142,7 @@ pub(crate) mod test {
             thread::spawn(move || block_on(parse_binlogs(client, all_events_clone)));
 
             // wait for binlog parsing
-            async_std::task::sleep(Duration::from_millis(self.binlog_parse_millis)).await;
+            tokio::time::sleep(Duration::from_millis(self.binlog_parse_millis)).await;
 
             for data in all_events.lock().unwrap().to_vec() {
                 match data {

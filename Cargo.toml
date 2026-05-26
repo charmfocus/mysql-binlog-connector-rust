@@ -18,8 +18,8 @@ readme = "README.md"
 
 [features]
 default = []
-rustls = ["dep:futures", "dep:futures-rustls", "dep:rustls"]
-openssl-tls = ["dep:openssl", "dep:async-std-openssl"]
+rustls = ["dep:tokio-rustls", "dep:rustls"]
+openssl-tls = ["dep:openssl", "dep:tokio-openssl"]
 
 [dependencies]
 byteorder = "1.4.3"
@@ -30,7 +30,7 @@ serial_test = "3.1.1"
 sha1 = "0.10.0"
 sha2 = "0.10.6"
 zstd = "0.13.2"
-async-std = "1.12.0"
+tokio = { version = "1", features = ["net", "time", "io-util", "rt"] }
 dotenv = "0.15.0"
 url = "2.3.1"
 percent-encoding = "2.3.1"
@@ -41,8 +41,7 @@ mysql_common = "0.33.0"
 base64 = "0.22.1"
 log = "0.4.26"
 socket2 = "0.6.1"
-futures = { version = "0.3", optional = true }
-futures-rustls = { version = "0.26", optional = true }
+tokio-rustls = { version = "0.26", optional = true }
 rustls = { version = "0.23", optional = true }
 openssl = { version = "0.10", optional = true }
-async-std-openssl = { version = "0.6", optional = true }
+tokio-openssl = { version = "0.6", optional = true }

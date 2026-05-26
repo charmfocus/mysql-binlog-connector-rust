@@ -13,24 +13,19 @@ use std::{
     time::Duration,
 };
 
-use async_std::{
-    future::timeout,
-    io::{ReadExt as AsyncStdReadExt, WriteExt as AsyncStdWriteExt},
-    net::TcpStream,
-};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use log::{trace, warn};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::{net::TcpStream, time::timeout};
 
 use crate::binlog_error::BinlogError;
 
 #[cfg(feature = "openssl-tls")]
-use async_std_openssl::SslStream as OpenSslStream;
+use tokio_openssl::SslStream as OpenSslStream;
 #[cfg(feature = "rustls")]
-use futures::io::{AsyncReadExt, AsyncWriteExt};
+use tokio_rustls::client::TlsStream;
 #[cfg(feature = "rustls")]
-use futures_rustls::client::TlsStream;
-#[cfg(feature = "rustls")]
-use futures_rustls::TlsConnector;
+use tokio_rustls::TlsConnector;
 #[cfg(feature = "openssl-tls")]
 use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
 #[cfg(feature = "rustls")]
@@ -295,7 +290,6 @@ impl PacketChannel {
         let mut tls_stream = OpenSslStream::new(ssl, plain_stream).map_err(|e| {
             BinlogError::ConnectError(format!("failed to create openssl stream: {}", e))
         })?;
-        AsyncStdWriteExt::flush(&mut tls_stream).await?;
         std::pin::Pin::new(&mut tls_stream)
             .connect()
             .await
@@ -315,15 +309,15 @@ impl PacketChannel {
     pub async fn close(&mut self) -> Result<(), BinlogError> {
         match self.stream.as_mut() {
             Some(ChannelStream::Plain(stream)) => {
-                stream.shutdown(std::net::Shutdown::Both)?;
+                stream.shutdown().await?;
             }
             #[cfg(feature = "rustls")]
             Some(ChannelStream::TlsRustls(stream)) => {
-                AsyncWriteExt::close(stream.as_mut()).await?;
+                stream.shutdown().await?;
             }
             #[cfg(feature = "openssl-tls")]
             Some(ChannelStream::TlsOpenSsl(stream)) => {
-                stream.get_mut().shutdown(std::net::Shutdown::Both)?;
+                stream.get_mut().shutdown().await?;
             }
             None => {}
         }
@@ -333,7 +327,7 @@ impl PacketChannel {
     pub async fn write(&mut self, buf: &[u8], sequence: u8) -> Result<(), BinlogError> {
         let mut wtr = Vec::new();
         wtr.write_u24::<LittleEndian>(buf.len() as u32)?;
-        wtr.write_u8(sequence)?;
+        WriteBytesExt::write_u8(&mut wtr, sequence)?;
         Write::write(&mut wtr, buf)?;
         self.write_all(&wtr).await?;
         Ok(())
@@ -358,7 +352,7 @@ impl PacketChannel {
         }
         let mut rdr = Cursor::new(buf);
         let length = rdr.read_u24::<LittleEndian>()? as usize;
-        let sequence = rdr.read_u8()?;
+        let sequence = ReadBytesExt::read_u8(&mut rdr)?;
         Ok((length, sequence))
     }
 
@@ -424,7 +418,7 @@ impl PacketChannel {
                             "Stream reading binlog returns zero-length data, Expected data length: {}, read so far: {}",
                             length, read_count
                         );
-                        async_std::task::sleep(Duration::from_millis(wait_data_millis)).await;
+                        tokio::time::sleep(Duration::from_millis(wait_data_millis)).await;
                         continue;
                     }
                     zero_reads = 0;
@@ -450,8 +444,8 @@ impl PacketChannel {
     async fn write_all(&mut self, buf: &[u8]) -> Result<(), BinlogError> {
         match &mut self.stream {
             Some(ChannelStream::Plain(stream)) => {
-                AsyncStdWriteExt::write_all(stream, buf).await?;
-                AsyncStdWriteExt::flush(stream).await?;
+                AsyncWriteExt::write_all(stream, buf).await?;
+                AsyncWriteExt::flush(stream).await?;
             }
             #[cfg(feature = "rustls")]
             Some(ChannelStream::TlsRustls(stream)) => {
@@ -460,8 +454,8 @@ impl PacketChannel {
             }
             #[cfg(feature = "openssl-tls")]
             Some(ChannelStream::TlsOpenSsl(stream)) => {
-                AsyncStdWriteExt::write_all(stream.as_mut(), buf).await?;
-                AsyncStdWriteExt::flush(stream.as_mut()).await?;
+                AsyncWriteExt::write_all(stream.as_mut(), buf).await?;
+                AsyncWriteExt::flush(stream.as_mut()).await?;
             }
             None => {
                 return Err(BinlogError::ConnectError(
@@ -474,14 +468,14 @@ impl PacketChannel {
 
     async fn read_once(&mut self, buf: &mut [u8]) -> Result<usize, BinlogError> {
         let read = match self.stream.as_mut() {
-            Some(ChannelStream::Plain(stream)) => AsyncStdReadExt::read(stream, buf).await?,
+            Some(ChannelStream::Plain(stream)) => AsyncReadExt::read(stream, buf).await?,
             #[cfg(feature = "rustls")]
             Some(ChannelStream::TlsRustls(stream)) => {
                 AsyncReadExt::read(stream.as_mut(), buf).await?
             }
             #[cfg(feature = "openssl-tls")]
             Some(ChannelStream::TlsOpenSsl(stream)) => {
-                AsyncStdReadExt::read(stream.as_mut(), buf).await?
+                AsyncReadExt::read(stream.as_mut(), buf).await?
             }
             None => {
                 return Err(BinlogError::ConnectError(
