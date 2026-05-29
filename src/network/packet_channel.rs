@@ -14,18 +14,12 @@ use std::{
 };
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-use log::{trace, warn};
+use log::{debug, trace};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::{net::TcpStream, time::timeout};
 
 use crate::binlog_error::BinlogError;
 
-#[cfg(feature = "openssl-tls")]
-use tokio_openssl::SslStream as OpenSslStream;
-#[cfg(feature = "rustls")]
-use tokio_rustls::client::TlsStream;
-#[cfg(feature = "rustls")]
-use tokio_rustls::TlsConnector;
 #[cfg(feature = "openssl-tls")]
 use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
 #[cfg(feature = "rustls")]
@@ -37,6 +31,12 @@ use rustls::{
 };
 #[cfg(feature = "rustls")]
 use std::sync::Arc;
+#[cfg(feature = "openssl-tls")]
+use tokio_openssl::SslStream as OpenSslStream;
+#[cfg(feature = "rustls")]
+use tokio_rustls::client::TlsStream;
+#[cfg(feature = "rustls")]
+use tokio_rustls::TlsConnector;
 
 const MAX_PACKET_LENGTH: usize = 16777215;
 
@@ -394,7 +394,7 @@ impl PacketChannel {
     async fn read_loop(&mut self, buf: &mut [u8]) -> Result<(), BinlogError> {
         let length = buf.len();
         let wait_data_millis = 10;
-        let max_zero_reads = self.timeout_secs * 1000 / wait_data_millis;
+        let max_zero_reads = std::cmp::min(self.timeout_secs * 1000 / wait_data_millis, 300);
         let mut read_count = 0;
         let mut zero_reads = 0;
 
@@ -414,7 +414,7 @@ impl PacketChannel {
                                 length, read_count
                             )));
                         }
-                        warn!(
+                        debug!(
                             "Stream reading binlog returns zero-length data, Expected data length: {}, read so far: {}",
                             length, read_count
                         );

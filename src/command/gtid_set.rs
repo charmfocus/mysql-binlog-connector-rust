@@ -8,7 +8,7 @@ pub struct Interval {
     pub end: u64,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GtidSet {
     pub map: HashMap<String, UuidSet>,
 }

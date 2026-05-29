@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, time::Duration};
 
 use crate::{
     binlog_error::BinlogError,
@@ -155,7 +155,7 @@ impl BinlogClient {
 
     /// 创建可自动重连的 binlog stream。
     ///
-    /// 内部克隆 BinlogClient 用于重连时获取最新 GTID 位点。
+    /// stream 内部自动追踪 GTID，重连时使用最新位点，调用方无需手动管理 GTID。
     /// 使用示例：
     /// ```ignore
     /// let client = BinlogClient::new(...).with_reconnect(config);
@@ -163,27 +163,7 @@ impl BinlogClient {
     /// while let Ok((header, data)) = stream.read().await { ... }
     /// ```
     pub async fn connect_with_reconnect(self) -> Result<ReconnectingBinlogStream, BinlogError> {
-        let config = self.reconnect_config.clone();
-        // 使用 Arc 共享 client，重连时克隆以获取最新状态
-        let client = Arc::new(std::sync::Mutex::new(self));
-
-        let make_connection: Arc<
-            dyn Fn() -> std::pin::Pin<
-                    Box<dyn std::future::Future<Output = Result<BinlogStream, BinlogError>> + Send>,
-                > + Send
-                + Sync,
-        > = {
-            let client = client.clone();
-            Arc::new(move || {
-                let client = client.clone();
-                Box::pin(async move {
-                    let mut c = client.lock().unwrap().clone();
-                    c.connect().await
-                })
-            })
-        };
-
-        ReconnectingBinlogStream::connect(config, make_connection).await
+        ReconnectingBinlogStream::connect(self).await
     }
 
     async fn do_connect(&self) -> Result<BinlogStream, BinlogError> {
@@ -237,7 +217,6 @@ impl BinlogClient {
         client_clone.binlog_position = binlog_position;
         CommandUtil::dump_binlog(&mut channel, &client_clone).await?;
 
-        // list for binlog
         let parser = BinlogParser {
             checksum_length: binlog_checksum.get_length(),
             table_map_event_by_table_id: HashMap::new(),
