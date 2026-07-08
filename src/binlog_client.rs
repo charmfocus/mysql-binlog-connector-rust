@@ -29,6 +29,9 @@ pub struct ReconnectConfig {
     pub max_backoff: Duration,
     /// 退避时间倍增因子
     pub multiplier: f64,
+    /// stream.read() 的最大等待时间，超时则主动断开重连（主动探活）
+    /// 应大于 MySQL master_heartbeat 间隔，建议设为 heartbeat * 3
+    pub read_timeout: Duration,
 }
 
 impl Default for ReconnectConfig {
@@ -38,6 +41,7 @@ impl Default for ReconnectConfig {
             initial_backoff: Duration::from_secs(1),
             max_backoff: Duration::from_secs(60),
             multiplier: 2.0,
+            read_timeout: Duration::from_secs(90),
         }
     }
 }

@@ -113,6 +113,14 @@ impl ServerCertVerifier for NoCertificateVerification {
 }
 
 impl PacketChannel {
+    #[cfg(test)]
+    pub fn new_for_test(stream: tokio::net::TcpStream, timeout_secs: u64) -> Self {
+        Self {
+            stream: Some(ChannelStream::Plain(stream)),
+            timeout_secs,
+        }
+    }
+
     pub async fn new(
         ip: &str,
         port: &str,
