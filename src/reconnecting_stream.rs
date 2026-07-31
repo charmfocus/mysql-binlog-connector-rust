@@ -15,6 +15,11 @@ const RECONNECT_WINDOW: std::time::Duration = std::time::Duration::from_secs(300
 /// 连续重连次数阈值：超过此值触发强力退避
 const RECONNECT_BURST_THRESHOLD: u64 = 3;
 
+/// 重连前关闭旧连接的超时兜底。PacketChannel::close 内部已自带超时，
+/// 此处再兜一层（防御纵深）：close 链路任何一环未来引入挂起点时，
+/// 重连路径都不会被拖死（跳板机半开链路假死的生产教训）。
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Auto-reconnecting binlog stream with built-in GTID tracking.
 ///
 /// Tracks GTID from binlog events internally (like go-mysql's masterInfo).
@@ -62,9 +67,16 @@ impl ReconnectingBinlogStream {
         })
     }
 
-    async fn connect_with_retry(config: &ReconnectConfig, client: &BinlogClient, is_reconnect: bool) -> Result<BinlogStream, BinlogError> {
+    async fn connect_with_retry(
+        config: &ReconnectConfig,
+        client: &BinlogClient,
+        is_reconnect: bool,
+    ) -> Result<BinlogStream, BinlogError> {
         if is_reconnect {
-            warn!("[RECONNECT] attempting reconnect, GTID: {}", client.gtid_set);
+            warn!(
+                "[RECONNECT] attempting reconnect, GTID: {}",
+                client.gtid_set
+            );
         }
         let mut attempt: u64 = 0;
         loop {
@@ -76,13 +88,19 @@ impl ReconnectingBinlogStream {
                     return Ok(stream);
                 }
                 Err(e) => {
-                    if !config.should_retry(attempt) { return Err(e); }
+                    if !config.should_retry(attempt) {
+                        return Err(e);
+                    }
                     let backoff = config.backoff_duration(attempt);
                     if attempt == 0 {
                         warn!("connect attempt 0 failed: {}, retrying...", e);
                     } else if is_reconnect {
-                        warn!("[RECONNECT] attempt {} failed: {}, retrying in {}s",
-                            attempt, e, backoff.as_secs());
+                        warn!(
+                            "[RECONNECT] attempt {} failed: {}, retrying in {}s",
+                            attempt,
+                            e,
+                            backoff.as_secs()
+                        );
                     }
                     tokio::time::sleep(backoff).await;
                     attempt += 1;
@@ -155,11 +173,12 @@ impl ReconnectingBinlogStream {
                 Ok(Err(e)) => {
                     // stream.read() 自身报错（如 TCP 断连）
                     warn!("[RECONNECT] entered reconnect path, error: {:?}", e);
-                    let _ = self.stream.close().await;
-                    self.stream = match Self::connect_with_retry(&self.config, &self.client, true).await {
-                        Ok(stream) => stream,
-                        Err(e) => return Err(e),
-                    };
+                    let _ = tokio::time::timeout(CLOSE_TIMEOUT, self.stream.close()).await;
+                    self.stream =
+                        match Self::connect_with_retry(&self.config, &self.client, true).await {
+                            Ok(stream) => stream,
+                            Err(e) => return Err(e),
+                        };
                 }
                 Err(_elapsed) => {
                     // 外层 read_timeout 超时 — 主动探活触发
@@ -170,15 +189,16 @@ impl ReconnectingBinlogStream {
                         read_timeout.as_secs(),
                         backoff.as_secs(),
                     );
-                    let _ = self.stream.close().await;
+                    let _ = tokio::time::timeout(CLOSE_TIMEOUT, self.stream.close()).await;
                     tokio::time::sleep(backoff).await;
-                    self.stream = match Self::connect_with_retry(&self.config, &self.client, true).await {
-                        Ok(stream) => {
-                            warn!("[HEALTHCHECK] reconnected successfully after read timeout");
-                            stream
-                        }
-                        Err(e) => return Err(e),
-                    };
+                    self.stream =
+                        match Self::connect_with_retry(&self.config, &self.client, true).await {
+                            Ok(stream) => {
+                                warn!("[HEALTHCHECK] reconnected successfully after read timeout");
+                                stream
+                            }
+                            Err(e) => return Err(e),
+                        };
                 }
             }
         }

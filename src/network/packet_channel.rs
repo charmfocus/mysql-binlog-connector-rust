@@ -20,6 +20,11 @@ use tokio::{net::TcpStream, time::timeout};
 
 use crate::binlog_error::BinlogError;
 
+/// close/shutdown 的超时兜底：对端静默丢包（连接半开）时 shutdown() 可能
+/// 永久挂起（生产实证：跳板机链路假死，2026-07-21 日志定位）。
+/// 超时后放弃优雅关闭，socket fd 随 PacketChannel drop 强制释放。
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
+
 #[cfg(feature = "openssl-tls")]
 use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
 #[cfg(feature = "rustls")]
@@ -315,6 +320,18 @@ impl PacketChannel {
     }
 
     pub async fn close(&mut self) -> Result<(), BinlogError> {
+        // 超时兜底：对端无响应时 shutdown 永久挂起会让调用方（重连路径）
+        // 整体卡死。超时返回错误，由调用方放弃本连接走重连。
+        match timeout(CLOSE_TIMEOUT, self.close_inner()).await {
+            Ok(res) => res,
+            Err(_) => Err(BinlogError::ConnectError(format!(
+                "close timed out after {:?} (peer unresponsive), giving up",
+                CLOSE_TIMEOUT
+            ))),
+        }
+    }
+
+    async fn close_inner(&mut self) -> Result<(), BinlogError> {
         match self.stream.as_mut() {
             Some(ChannelStream::Plain(stream)) => {
                 stream.shutdown().await?;
@@ -450,20 +467,48 @@ impl PacketChannel {
     }
 
     async fn write_all(&mut self, buf: &[u8]) -> Result<(), BinlogError> {
+        // 写路径同样存在半开挂起：对端不读导致内核发送缓冲满时，
+        // write_all/flush 永久 pending。认证握手与 dump 命令都经由此处，
+        // 无超时会让重连建链阶段卡死。超时复用 timeout_secs，与读路径一致。
+        let write_timeout = Duration::from_secs(self.timeout_secs);
+        let write_err = |_: tokio::time::error::Elapsed| {
+            BinlogError::ConnectError(format!(
+                "write timed out after {:?} (peer unresponsive)",
+                write_timeout
+            ))
+        };
         match &mut self.stream {
             Some(ChannelStream::Plain(stream)) => {
-                AsyncWriteExt::write_all(stream, buf).await?;
-                AsyncWriteExt::flush(stream).await?;
+                timeout(write_timeout, AsyncWriteExt::write_all(stream, buf))
+                    .await
+                    .map_err(write_err)??;
+                timeout(write_timeout, AsyncWriteExt::flush(stream))
+                    .await
+                    .map_err(write_err)??;
             }
             #[cfg(feature = "rustls")]
             Some(ChannelStream::TlsRustls(stream)) => {
-                AsyncWriteExt::write_all(stream.as_mut(), buf).await?;
-                AsyncWriteExt::flush(stream.as_mut()).await?;
+                timeout(
+                    write_timeout,
+                    AsyncWriteExt::write_all(stream.as_mut(), buf),
+                )
+                .await
+                .map_err(write_err)??;
+                timeout(write_timeout, AsyncWriteExt::flush(stream.as_mut()))
+                    .await
+                    .map_err(write_err)??;
             }
             #[cfg(feature = "openssl-tls")]
             Some(ChannelStream::TlsOpenSsl(stream)) => {
-                AsyncWriteExt::write_all(stream.as_mut(), buf).await?;
-                AsyncWriteExt::flush(stream.as_mut()).await?;
+                timeout(
+                    write_timeout,
+                    AsyncWriteExt::write_all(stream.as_mut(), buf),
+                )
+                .await
+                .map_err(write_err)??;
+                timeout(write_timeout, AsyncWriteExt::flush(stream.as_mut()))
+                    .await
+                    .map_err(write_err)??;
             }
             None => {
                 return Err(BinlogError::ConnectError(
@@ -492,6 +537,68 @@ impl PacketChannel {
             }
         };
         Ok(read)
+    }
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::*;
+
+    /// F3 回归：正常连接上 close 应在 CLOSE_TIMEOUT 内成功返回（行为不回归）。
+    #[tokio::test]
+    async fn close_on_healthy_connection_succeeds_fast() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let _conn = listener.accept().await.unwrap();
+            // hold 住连接，保持对端存活
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let mut channel = PacketChannel::new_for_test(stream, 3);
+        let start = std::time::Instant::now();
+        channel.close().await.expect("healthy close should succeed");
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "healthy close should return immediately"
+        );
+        server.abort();
+    }
+
+    /// F2 回归：对端不读（内核发送缓冲耗尽）时 write_all 必须在
+    /// timeout_secs 内报错，而不是永久挂起（跳板机半开场景）。
+    #[tokio::test]
+    async fn write_all_times_out_when_peer_not_reading() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (_conn, _) = listener.accept().await.unwrap();
+            // 永远不读：让客户端发送缓冲逐渐耗尽
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let mut channel = PacketChannel::new_for_test(stream, 1); // 1s 超时
+        // 远大于内核发送缓冲的数据量，保证 write_all 会 pending
+        let big_buf = vec![0xABu8; 64 * 1024 * 1024];
+
+        let start = std::time::Instant::now();
+        let result = channel.write_all(&big_buf).await;
+        let elapsed = start.elapsed();
+
+        server.abort();
+        let err = result.expect_err("write must fail when peer never reads");
+        assert!(
+            err.to_string().contains("write timed out"),
+            "expect write timeout error, got: {}",
+            err
+        );
+        assert!(
+            elapsed >= Duration::from_secs(1) && elapsed < Duration::from_secs(10),
+            "timeout should fire near 1s, took {:?}",
+            elapsed
+        );
     }
 }
 
