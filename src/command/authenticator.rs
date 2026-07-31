@@ -77,8 +77,7 @@ impl Authenticator {
         }
 
         let tls_mode = TlsMode::from_url(&url_info)?;
-        if tls_mode == TlsMode::Required
-            && !cfg!(any(feature = "rustls", feature = "openssl-tls"))
+        if tls_mode == TlsMode::Required && !cfg!(any(feature = "rustls", feature = "openssl-tls"))
         {
             return Err(BinlogError::ConnectError(
                 "TLS requested via ssl-mode=required, but crate was built without a TLS feature"
@@ -124,9 +123,8 @@ impl Authenticator {
             }
 
             let ssl_request = SSLRequestCommand {
-                client_capabilities: self.client_capabilities_for_plugin(
-                    &greeting_packet.plugin_provided_data,
-                ),
+                client_capabilities: self
+                    .client_capabilities_for_plugin(&greeting_packet.plugin_provided_data),
                 collation: self.collation,
             };
             channel
@@ -391,9 +389,7 @@ mod tests {
         .err()
         .unwrap();
 
-        assert!(err
-            .to_string()
-            .contains("built without a TLS feature"));
+        assert!(err.to_string().contains("built without a TLS feature"));
     }
 
     #[cfg(any(feature = "rustls", feature = "openssl-tls"))]
@@ -408,5 +404,4 @@ mod tests {
 
         assert_eq!(auth.tls_mode, TlsMode::Required);
     }
-
 }

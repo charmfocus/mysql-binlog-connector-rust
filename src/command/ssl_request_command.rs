@@ -60,6 +60,9 @@ mod tests {
         .to_bytes()
         .unwrap();
 
-        assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), MAX_PACKET_SIZE);
+        assert_eq!(
+            u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
+            MAX_PACKET_SIZE
+        );
     }
 }
